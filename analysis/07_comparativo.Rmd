@@ -1,0 +1,1007 @@
+
+```{r}
+# ============================================================
+# 07_comparativo.Rmd
+# COMPARACIÓN FINAL DE MODELOS
+# MODELOS: ANN vs RANDOM FOREST vs ÁRBOL DE DECISIÓN
+# VALIDACIÓN TEMPORAL + REPETICIONES (SIN SEMILLAS)
+# APLICA A CUALQUIER SEGMENTO (BANCOS / COOPERATIVAS / FINANCIERAS)
+#
+# Requiere que existan en el entorno:
+#   - segmento_actual
+#   - anios_test_final
+#   - resultados_test_final_*_resumen (.rds)
+#   - metricas_por_entidad_* (.rds)
+#   - here, glue cargados en 01_setup.Rmd
+# ============================================================
+
+```
+
+
+```{r}
+# ============================================================
+# CARGA DE RESULTADOS RESUMIDOS
+# ============================================================
+
+res_nn <- readRDS(
+  here::here( 
+    "salidas",
+    glue::glue("resultados_test_final_nn_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "ANN")
+
+res_rf <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("resultados_test_final_rf_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "RF")
+
+res_dt <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("resultados_test_final_dt_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "DT")
+
+```
+
+```{r}
+# ============================================================
+# TABLA COMPARATIVA FINAL (F1 MACRO)
+# ============================================================
+
+tabla_comparativa <- bind_rows(res_nn, res_rf, res_dt) %>%
+  select(
+    modelo,
+    anio_test,
+    f1_macro_mean,
+    f1_macro_sd,
+    precision_macro_mean
+  ) %>%
+  arrange(anio_test, desc(f1_macro_mean))
+
+tabla_comparativa
+
+```
+
+```{r}
+# ============================================================
+# TABLA RESUMEN GLOBAL (PROMEDIO 2023–2025)
+# ============================================================
+
+tabla_resumen_global <- tabla_comparativa %>%
+  group_by(modelo) %>%
+  summarise(
+    f1_macro_mean = mean(f1_macro_mean),
+    f1_macro_sd   = mean(f1_macro_sd),
+    precision_mean = mean(precision_macro_mean),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(f1_macro_mean))
+
+tabla_resumen_global
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE: COMPARACIÓN GLOBAL DE MODELOS
+# ============================================================
+
+grafico_comparativo_global <- tabla_resumen_global %>%
+  ggplot(aes(x = f1_macro_mean, y = reorder(modelo, f1_macro_mean))) +
+  geom_segment(
+    aes(x = 0, xend = f1_macro_mean, yend = modelo),
+    linewidth = 0.5,
+    color = "grey60"
+  ) +
+  geom_point(size = 3, color = "black") +
+  geom_text(
+    aes(label = round(f1_macro_mean, 3)),
+    hjust = -0.15,
+    size = 3
+  ) +
+  scale_x_continuous(
+    limits = c(
+      0,
+      max(tabla_resumen_global$f1_macro_mean, na.rm = TRUE) * 1.08
+    )
+  ) +
+  labs(
+    title    = glue::glue("Comparación de modelos – {segmento_actual}"),
+    subtitle = "F1 macro promedio (test final con repeticiones)",
+    x        = "F1 macro",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.line.x        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+
+grafico_comparativo_global
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "comparacion_global_modelos_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_comparativo_global,
+  path   = dir_figuras,
+  width  = 7,
+  height = 4.5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "comparacion_global_modelos_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_comparativo_global,
+  path   = dir_figuras,
+  width  = 7,
+  height = 4.5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE: EVOLUCIÓN ANUAL POR MODELO
+# ============================================================
+
+grafico_evolucion_anual <- tabla_comparativa %>%
+  mutate(anio_test = factor(anio_test)) %>%
+  ggplot(aes(x = anio_test, y = f1_macro_mean, group = modelo)) +
+  geom_line(linewidth = 0.6, color = "grey40") +
+  geom_point(aes(shape = modelo), size = 2.5, color = "black") +
+  geom_text(
+    aes(label = round(f1_macro_mean, 3)),
+    vjust = -0.9,
+    size = 2.7
+  ) +
+  scale_y_continuous(
+    limits = c(
+      min(tabla_comparativa$f1_macro_mean, na.rm = TRUE) * 0.97,
+      max(tabla_comparativa$f1_macro_mean, na.rm = TRUE) * 1.03
+    ),
+    labels = scales::number_format(accuracy = 0.01)
+  ) +
+  labs(
+    title    = glue::glue(
+      "Desempeño fuera de muestra por modelo – {segmento_actual}"
+    ),
+    subtitle = "F1 macro por año (test final con repeticiones)",
+    x        = NULL,
+    y        = "F1 macro",
+    shape    = "Modelo"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line.y        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9),
+    legend.position    = "bottom"
+  )
+
+grafico_evolucion_anual
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "evolucion_anual_modelos_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_evolucion_anual,
+  path   = dir_figuras,
+  width  = 7,
+  height = 4.5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "evolucion_anual_modelos_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_evolucion_anual,
+  path   = dir_figuras,
+  width  = 7,
+  height = 4.5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+```{r}
+# ============================================================
+# GUARDAR TABLAS COMPARATIVAS
+# ============================================================
+
+saveRDS(
+  tabla_comparativa,
+  here::here(
+    "salidas",
+    glue::glue("tabla_comparativa_modelos_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  tabla_resumen_global,
+  here::here(
+    "salidas",
+    glue::glue("tabla_resumen_modelos_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+
+```{r}
+# ============================================================
+# CARGA DE MÉTRICAS POR ENTIDAD
+# ============================================================
+
+ent_nn <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("metricas_por_entidad_nn_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "ANN")
+
+ent_rf <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("metricas_por_entidad_rf_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "RF")
+
+ent_dt <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("metricas_por_entidad_dt_{tolower(segmento_actual)}.rds")
+  )
+) %>%
+  mutate(modelo = "DT")
+
+```
+
+```{r}
+# ============================================================
+# TABLA CONSOLIDADA POR ENTIDAD
+# ============================================================
+
+tabla_entidad <- bind_rows(ent_nn, ent_rf, ent_dt)
+
+tabla_entidad
+
+```
+
+```{r}
+# ============================================================
+# RESUMEN POR ENTIDAD Y MODELO
+# ============================================================
+
+tabla_entidad_resumen <- tabla_entidad %>%
+  group_by(entidad, modelo) %>%
+  summarise(
+    f1_mean        = mean(f1, na.rm = TRUE),
+    precision_mean = mean(precision, na.rm = TRUE),
+    recall_mean    = mean(recall, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+tabla_entidad_resumen
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE: F1 POR ENTIDAD Y MODELO
+# ============================================================
+
+grafico_f1_entidad_modelo <- tabla_entidad_resumen %>%
+  ggplot(
+    aes(
+      x = f1_mean,
+      y = reorder(entidad, f1_mean, FUN = mean)
+    )
+  ) +
+  geom_segment(
+    aes(x = 0, xend = f1_mean, yend = entidad),
+    linewidth = 0.3,
+    color = "grey80"
+  ) +
+  geom_point(
+    aes(shape = modelo),
+    size = 2.2,
+    color = "black"
+  ) +
+  geom_text(
+    aes(label = round(f1_mean, 3)),
+    hjust = -0.15,
+    size = 2.7
+  ) +
+  scale_x_continuous(
+    limits = c(
+      0,
+      max(tabla_entidad_resumen$f1_mean, na.rm = TRUE) * 1.07
+    )
+  ) +
+  labs(
+    title    = glue::glue(
+      "Desempeño por entidad y modelo – {segmento_actual}"
+    ),
+    subtitle = "F1 promedio por entidad (test final con repeticiones)",
+    x        = "F1",
+    y        = NULL,
+    shape    = "Modelo"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.line.x        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9),
+    legend.position    = "bottom"
+  )
+
+grafico_f1_entidad_modelo
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "f1_entidad_modelo_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_f1_entidad_modelo,
+  path   = dir_figuras,
+  width  = 7,
+  height = 6,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "f1_entidad_modelo_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_f1_entidad_modelo,
+  path   = dir_figuras,
+  width  = 7,
+  height = 6,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+```{r}
+# ============================================================
+# MODELO DOMINANTE POR ENTIDAD
+# ============================================================
+
+mejor_modelo_entidad <- tabla_entidad_resumen %>%
+  group_by(entidad) %>%
+  slice_max(f1_mean, n = 1, with_ties = FALSE) %>%
+  arrange(desc(f1_mean))
+
+mejor_modelo_entidad
+
+```
+
+```{r}
+# ============================================================
+# GUARDAR RESULTADOS POR ENTIDAD
+# ============================================================
+
+saveRDS(
+  tabla_entidad_resumen,
+  here::here(
+    "salidas",
+    glue::glue("tabla_entidad_modelos_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  mejor_modelo_entidad,
+  here::here(
+    "salidas",
+    glue::glue("mejor_modelo_por_entidad_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+
+```{r}
+# ============================================================
+# F1 POR ENTIDAD Y AÑO (PROMEDIO SOBRE REPETICIONES)
+# ============================================================
+
+tabla_entidad_anio <- tabla_entidad %>%
+  group_by(entidad, anio_test, modelo) %>%
+  summarise(
+    f1_mean = mean(f1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+tabla_entidad_anio
+
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE:
+# EVOLUCIÓN F1 POR ENTIDAD Y AÑO (POR MODELO)
+# ============================================================
+
+grafico_evolucion_entidad_anio <- tabla_entidad_anio %>%
+  mutate(anio_test = factor(anio_test)) %>%
+  ggplot(
+    aes(
+      x = anio_test,
+      y = f1_mean,
+      group = entidad
+    )
+  ) +
+  geom_line(color = "grey70", linewidth = 0.4) +
+  geom_point(color = "black", size = 1.5) +
+  facet_wrap(~ modelo, ncol = 1) +
+  scale_y_continuous(
+    limits = c(
+      min(tabla_entidad_anio$f1_mean, na.rm = TRUE) * 0.95,
+      max(tabla_entidad_anio$f1_mean, na.rm = TRUE) * 1.05
+    ),
+    labels = scales::number_format(accuracy = 0.01)
+  ) +
+  labs(
+    title    = glue::glue(
+      "Evolución del desempeño por entidad – {segmento_actual}"
+    ),
+    subtitle = "F1 macro por entidad y año (promedio sobre repeticiones)",
+    x        = "Año",
+    y        = "F1 macro"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.line.y        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+
+grafico_evolucion_entidad_anio
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "evolucion_f1_entidad_anio_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_evolucion_entidad_anio,
+  path   = dir_figuras,
+  width  = 7,
+  height = 9,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "evolucion_f1_entidad_anio_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_evolucion_entidad_anio,
+  path   = dir_figuras,
+  width  = 7,
+  height = 9,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE:
+# RANKING F1 POR ENTIDAD Y AÑO (MODELO SELECCIONADO)
+# ============================================================
+
+modelo_referencia <- "RF"   # o "ANN" / "DT"
+
+grafico_ranking_entidad_anio <- tabla_entidad_anio %>%
+  filter(modelo == modelo_referencia) %>%
+  ggplot(
+    aes(
+      x = f1_mean,
+      y = reorder(entidad, f1_mean)
+    )
+  ) +
+  geom_segment(
+    aes(x = 0, xend = f1_mean, yend = entidad),
+    linewidth = 0.3,
+    color = "grey80"
+  ) +
+  geom_point(color = "black", size = 2) +
+  facet_wrap(~ anio_test) +
+  scale_x_continuous(
+    limits = c(
+      0,
+      max(tabla_entidad_anio$f1_mean, na.rm = TRUE) * 1.05
+    )
+  ) +
+  labs(
+    title    = glue::glue(
+      "Desempeño por entidad y año – {segmento_actual} - {modelo_referencia}"
+    ),
+    subtitle = "F1 macro por entidad (test final)",
+    x        = "F1 macro",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.line.x        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+
+grafico_ranking_entidad_anio
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE:
+# RANKING F1 POR ENTIDAD Y AÑO (MODELO SELECCIONADO)
+# ============================================================
+
+modelo_referencia <- "DT"   # "ANN" / "DT" / "RF"
+
+grafico_ranking_entidad_anio <- tabla_entidad_anio %>%
+  filter(modelo == modelo_referencia) %>%
+  ggplot(
+    aes(
+      x = f1_mean,
+      y = reorder(entidad, f1_mean)
+    )
+  ) +
+  geom_segment(
+    aes(x = 0, xend = f1_mean, yend = entidad),
+    linewidth = 0.3,
+    color = "grey80"
+  ) +
+  geom_point(color = "black", size = 2) +
+  facet_wrap(~ anio_test) +
+  scale_x_continuous(
+    limits = c(
+      0,
+      max(tabla_entidad_anio$f1_mean, na.rm = TRUE) * 1.05
+    )
+  ) +
+  labs(
+    title    = glue::glue(
+      "Desempeño por entidad y año – {segmento_actual} – {modelo_referencia}"
+    ),
+    subtitle = "F1 macro por entidad (test final)",
+    x        = "F1 macro",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.line.x        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+
+grafico_ranking_entidad_anio
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+```{r}
+# ============================================================
+# GRÁFICO TUFTE-STYLE:
+# RANKING F1 POR ENTIDAD Y AÑO (MODELO SELECCIONADO)
+# ============================================================
+
+modelo_referencia <- "ANN"   # "MLP" / "DT" / "RF"
+
+grafico_ranking_entidad_anio <- tabla_entidad_anio %>%
+  filter(modelo == modelo_referencia) %>%
+  ggplot(
+    aes(
+      x = f1_mean,
+      y = reorder(entidad, f1_mean)
+    )
+  ) +
+  geom_segment(
+    aes(x = 0, xend = f1_mean, yend = entidad),
+    linewidth = 0.3,
+    color = "grey80"
+  ) +
+  geom_point(color = "black", size = 2) +
+  facet_wrap(~ anio_test) +
+  scale_x_continuous(
+    limits = c(
+      0,
+      max(tabla_entidad_anio$f1_mean, na.rm = TRUE) * 1.05
+    )
+  ) +
+  labs(
+    title    = glue::glue(
+      "Desempeño por entidad y año – {segmento_actual} – {modelo_referencia}"
+    ),
+    subtitle = "F1 macro por entidad (test final)",
+    x        = "F1 macro",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.y = element_blank(),
+    axis.line.x        = element_line(color = "grey40"),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+grafico_ranking_entidad_anio
+
+# ============================================================
+# GUARDAR GRÁFICO (PNG + PDF, PUBLICACIÓN)
+# ============================================================
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.png"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "ranking_f1_entidad_anio_{tolower(modelo_referencia)}_{tolower(segmento_actual)}.pdf"
+  ),
+  plot   = grafico_ranking_entidad_anio,
+  path   = dir_figuras,
+  width  = 8,
+  height = 5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+
+```{r}
+# ============================================================
+# ENTIDADES CON BAJO DESEMPEÑO SISTEMÁTICO
+# ============================================================
+
+entidades_bajo_f1 <- tabla_entidad_anio %>%
+  group_by(entidad, modelo) %>%
+  summarise(
+    f1_min  = min(f1_mean),
+    f1_mean = mean(f1_mean),
+    .groups = "drop"
+  ) %>%
+  filter(f1_min < 0.6) %>%    # umbral ajustable
+  arrange(f1_min)
+
+entidades_bajo_f1
+
+```
+
+```{r}
+# ============================================================
+# GUARDAR RESULTADOS POR ENTIDAD Y AÑO
+# ============================================================
+
+saveRDS(
+  tabla_entidad_anio,
+  here::here(
+    "salidas",
+    glue::glue("f1_entidad_anio_modelos_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  entidades_bajo_f1,
+  here::here(
+    "salidas",
+    glue::glue("entidades_bajo_f1_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+
+```{r}
+# ============================================================
+# FIGURA MATRICES DE CONFUSIÓN PROMEDIO POR MÉTODO
+# ============================================================
+
+# ------------------------------------------------------------
+# CARGA DE MATRICES DE CONFUSIÓN PROMEDIO
+# ------------------------------------------------------------
+
+conf_nn <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_nn_{tolower(segmento_actual)}.rds")
+  )
+) %>% mutate(modelo = "ANN")
+
+conf_rf <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_rf_{tolower(segmento_actual)}.rds")
+  )
+) %>% mutate(modelo = "RF")
+
+conf_dt <- readRDS(
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_dt_{tolower(segmento_actual)}.rds")
+  )
+) %>% mutate(modelo = "DT")
+
+conf_all <- bind_rows(conf_nn, conf_rf, conf_dt)
+
+# ------------------------------------------------------------
+# MATRIZ PROMEDIO NORMALIZADA POR FILA
+# ------------------------------------------------------------
+
+conf_avg <- conf_all %>%
+  group_by(modelo, truth, estimate) %>%
+  summarise(n_mean = mean(n), .groups = "drop") %>%
+  group_by(modelo, truth) %>%
+  mutate(prop = n_mean / sum(n_mean)) %>%
+  ungroup()
+
+# ------------------------------------------------------------
+# FUNCIÓN DE GRÁFICO (UN PANEL)
+# ------------------------------------------------------------
+
+plot_confusion_panel <- function(df, titulo) {
+  ggplot(
+    df,
+    aes(
+      x = factor(truth, levels = sort(unique(truth))),
+      y = factor(estimate, levels = rev(sort(unique(estimate)))),
+      fill = prop
+    )
+  ) +
+    geom_tile(color = "grey85", linewidth = 0.2) +
+    geom_text(
+      aes(label = ifelse(prop > 0.05, scales::number(prop, accuracy = 0.01), "")),
+      size = 2.3,
+      color = "grey20"
+    ) +
+    scale_fill_gradient(
+      low = "white",
+      high = "grey20",
+      limits = c(0, 1)
+    ) +
+    labs(
+      title = titulo,
+      x = "Entidad verdadera",
+      y = "Entidad predicha",
+      fill = "Proporción"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 90, vjust = 0.5, size = 7),
+      axis.text.y = element_text(size = 7),
+      plot.title  = element_text(face = "bold", size = 11)
+    )
+}
+
+# ------------------------------------------------------------
+# CONSTRUCCIÓN DE LOS TRES PANELES
+# ------------------------------------------------------------
+
+p_mlp <- plot_confusion_panel(
+  conf_avg %>% filter(modelo == "ANN"),
+  "(a) ANN"
+)
+
+p_rf <- plot_confusion_panel(
+  conf_avg %>% filter(modelo == "RF"),
+  "(b) RF"
+)
+
+p_dt <- plot_confusion_panel(
+  conf_avg %>% filter(modelo == "DT"),
+  "(c) DT"
+)
+
+figura_x <- p_mlp + p_rf + p_dt +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right")
+
+figura_x
+
+# ------------------------------------------------------------
+# GUARDAR FIGURA X (PNG + PDF)
+# ------------------------------------------------------------
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue("figura_X_confusion_promedio_{tolower(segmento_actual)}.png"),
+  plot   = figura_x,
+  path   = dir_figuras,
+  width  = 12,
+  height = 4.5,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue("figura_X_confusion_promedio_{tolower(segmento_actual)}.pdf"),
+  plot   = figura_x,
+  path   = dir_figuras,
+  width  = 12,
+  height = 4.5,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+```{r}
+#------------------------------------------------
+# GUARDAR INSUMOS PARA ANÁLISIS POSTERIOR (CASOS DE ESTUDIO)
+#----------------------------------------------
+# Estos archivos son insumos directos para:
+# 08_caso_estudio_entidades_intervenidas.Rmd
+
+
+saveRDS(
+  tabla_entidad_anio,
+  here::here(
+    "salidas",
+    glue::glue("tabla_entidad_anio_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  tabla_entidad,
+  here::here(
+    "salidas",
+    glue::glue("tabla_entidad_reps_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  conf_all,
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_todas_modelos_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+

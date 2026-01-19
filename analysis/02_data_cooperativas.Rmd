@@ -1,0 +1,18 @@
+---
+title: "02_data_cooperativas"
+output: html_document
+---
+
+```{r}
+datos <- readRDS(
+  here::here("entradas", "datos_cooperativas_limpio.rds")
+) %>%
+  mutate(
+    periodo = as.Date(periodo),
+    anio    = lubridate::year(periodo),
+    entidad = factor(entidad)
+  )
+
+
+segmento_actual <- "Cooperativas"
+```

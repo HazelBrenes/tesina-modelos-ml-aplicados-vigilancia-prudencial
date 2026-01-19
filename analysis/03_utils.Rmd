@@ -1,0 +1,38 @@
+---
+title: "03_utils"
+output: html_document
+---
+
+```{r}
+metricas_desde_mc <- function(df) {
+  mc <- table(df$entidad, df$.pred_class)
+  VP <- diag(mc)
+  FP <- colSums(mc) - VP
+  FN <- rowSums(mc) - VP
+
+  tibble(
+    precision_k = VP / (VP + FP),
+    f1_k        = VP / (VP + 0.5 * (FP + FN))
+  )
+}
+
+matriz_confusion_tidy <- function(df) {
+  df %>% count(entidad, .pred_class, name = "n")
+}
+
+metricas_por_entidad <- function(df) {
+  mc <- table(df$entidad, df$.pred_class)
+  VP <- diag(mc)
+  FP <- colSums(mc) - VP
+  FN <- rowSums(mc) - VP
+
+  tibble(
+    entidad   = names(VP),
+    precision = VP / (VP + FP),
+    recall    = VP / (VP + FN),
+    f1        = 2 * VP / (2 * VP + FP + FN)
+  )
+}
+
+```
+

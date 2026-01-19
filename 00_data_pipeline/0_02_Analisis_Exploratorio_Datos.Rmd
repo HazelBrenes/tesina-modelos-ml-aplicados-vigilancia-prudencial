@@ -1,0 +1,785 @@
+---
+title: "Análisis Exploratorio de Datos"
+subtitle: "Cuentas contables por entidad supervisada"
+author: "Hazel Brenes Umaña & Minor Acuña Araya"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+---
+
+## Propósito del documento
+
+Este documento presenta el **análisis exploratorio de los datos contables por entidad supervisada**, construidos a partir de información pública del API de la Sugef.
+
+El objetivo del análisis es:
+
+- Verificar **cobertura temporal y transversal** de las entidades
+- Evaluar **escalas, distribuciones y estabilidad** de las principales cuentas contables
+- Detectar **valores atípicos, rupturas estructurales o inconsistencias**
+- Apoyar decisiones posteriores de **transformación de variables y modelado supervisado**
+
+> **Dependencia**  
+> Este análisis utiliza como insumo el archivo `entradas/datos.rds`, generado previamente por el script  
+> **`01_Generar_Base.R`**, el cual debe ejecutarse antes de renderizar este documento.
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.align  = "center",
+  fig.width  = 9,
+  fig.height = 5,
+  out.width  = "90%"
+)
+```
+
+
+# 1. Carga de paquetes y datos
+
+```{r}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(lubridate)
+  library(here)
+  library(scales)
+  library(here)
+  library(janitor)
+  library(kableExtra)
+  library(tidyverse)
+  library(DataExplorer)
+  library(randomForest)
+  library(caret)
+
+})
+
+# Tema global para ggplot2
+
+theme_eda <- theme_minimal(base_size = 13, base_family = "sans") +
+theme(
+panel.grid.minor = element_blank(),
+panel.grid.major = element_line(linewidth = 0.2),
+plot.title       = element_text(face = "bold", hjust = 0),
+plot.subtitle    = element_text(hjust = 0),
+axis.title       = element_text(face = "bold"),
+strip.text       = element_text(face = "bold"),
+legend.position  = "bottom"
+)
+
+theme_set(theme_eda)
+```
+
+```{r}
+df <- readRDS(here::here("entradas", "datos.rds")) %>%
+  clean_names()
+```
+
+
+
+# 2. Renombramiento y agrupación de cuentas contables
+
+Para facilitar la interpretación económica, se renombran las principales cuentas contables agregadas.
+
+```{r}
+df <- df %>%
+  rename(
+    C110_Disponibilidades        = c110,
+    C120_Inversiones             = c120,
+    C130_Creditos                = c130,
+    C139_Estimaciones            = c139,
+    C140_CuentasxCobrar          = c140,
+    C150_BienesVenta             = c150,
+    C160_PartEmpresas            = c160,
+    C170_PropiedadesEquipo       = c170,
+    C180_OtrosActivos            = c180,
+    C190_PropiedadInversion      = c190,
+    C210_OblPublico              = c210,
+    C220_OblBCCR                 = c220,
+    C230_OblEntidades            = c230,
+    C240_CuentasxPagar           = c240,
+    C250_OtrosPasivos            = c250,
+    C260_ObligSubord             = c260,
+    C290_CapitalxPagar           = c290,
+    C310_CapitalSocial           = c310,
+    C320_AportNoCap              = c320,
+    C330_AjusOtrosResultados     = c330,
+    C340_Reservas                = c340,
+    C350_ResultadosAcum          = c350,
+    C360_ResultadoPeriodo        = c360,
+    C380_AporteFondosEsp         = c380
+  )
+
+```
+
+
+# 3. Identificar variables (cuentas contables)
+
+```{r}
+vars_c <- df[, -c(1:3)] %>%
+select(starts_with("C")) %>%
+names()
+
+```
+
+# 4. Descripción general de los datos
+
+```{r}
+glimpse(df)
+resumen_general <- df %>%
+summarise(
+observaciones = n(),
+entidades     = n_distinct(nombre_entidad),
+sectores      = n_distinct(codigo_sector),
+periodos      = n_distinct(periodo),
+cuentas_c     = length(vars_c)
+)
+
+resumen_general %>%
+kable(
+caption = "Resumen general del conjunto de datos",
+align   = "c",
+digits  = 0
+) %>%
+kable_styling(
+full_width        = FALSE,
+bootstrap_options = c("striped", "hover", "condensed")
+)
+```
+
+```{r}
+
+head(df)
+
+```
+
+```{r}
+str(df)
+```
+
+# 5. Estadísticos descriptivos de cuentas
+
+```{r}
+estadisticos_cuentas <- df %>%
+select(all_of(vars_c)) %>%
+pivot_longer(
+cols      = everything(),
+names_to  = "variable",
+values_to = "valor"
+) %>%
+group_by(variable) %>%
+summarise(
+min        = min(valor, na.rm = TRUE),
+p25        = quantile(valor, 0.25, na.rm = TRUE),
+media      = mean(valor, na.rm = TRUE),
+mediana    = median(valor, na.rm = TRUE),
+p75        = quantile(valor, 0.75, na.rm = TRUE),
+max        = max(valor, na.rm = TRUE),
+na         = sum(is.na(valor)),
+.groups    = "drop"
+) %>%
+arrange(variable)
+
+estadisticos_cuentas %>%
+kable(
+caption = "Estadísticos descriptivos de las cuentas contables (C)",
+digits  = 2
+) %>%
+kable_styling(
+full_width        = FALSE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "500px")
+```
+
+# 6. Distribución de cuentas
+
+```{r fig.height=12, fig.width=12}
+
+top6 <- df %>%
+select(all_of(vars_c)) %>%
+summarise(across(everything(), ~ sum(.x, na.rm = TRUE))) %>%
+pivot_longer(
+cols      = everything(),
+names_to  = "variable",
+values_to = "total"
+) %>%
+arrange(desc(total)) %>%
+slice(1:24) %>%
+pull(variable)
+
+df %>%
+pivot_longer(
+cols      = all_of(vars_c),
+names_to  = "variable",
+values_to = "valor"
+) %>%
+ggplot(aes(x = valor/ 1e9)) +
+geom_histogram(bins = 40, fill = "#4E79A7") +
+facet_wrap(~ variable, scales = "free") +
+labs(
+title    = "Distribución cuentas contables (miles de millones)",
+x        = "Valor",
+y        = "Frecuencia"
+) +
+scale_x_continuous(labels = label_number())
+```
+
+# 7. Evolución temporal de cuentas grandes (entidad agregada)
+
+```{r fig.height=12, fig.width=12}
+
+df %>%
+  select(periodo, all_of(top6)) %>%
+  mutate(periodo = ymd(periodo)) %>%
+  pivot_longer(
+    cols      = -periodo,
+    names_to  = "variable",
+    values_to = "valor"
+  ) %>%
+  group_by(periodo, variable) %>%
+  summarise(valor = sum(valor, na.rm = TRUE) / 1e12, .groups = "drop") %>%
+  ggplot(aes(x = periodo, y = valor, colour = variable)) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(~ variable, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Evolución temporal de las principales cuentas contables",
+    x     = "Periodo",
+    y     = "Valor (billones)"
+  ) +
+  scale_y_continuous(
+    labels = label_number(suffix = " mil MM", accuracy = 0.1)
+  ) +
+  scale_color_viridis_d(option = "D", end = 0.85) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text       = element_text(face = "bold"),
+    legend.position  = "none"
+  )
+
+```
+
+# 8. Exploración de patrones entre cuentas (correlaciones)
+
+```{r fig.height=9, fig.width=9}
+
+mat_cor <- df %>%
+select(all_of(vars_c)) %>%
+cor(use = "pairwise.complete.obs")
+
+cor_long <- mat_cor %>%
+as.data.frame() %>%
+rownames_to_column("var1") %>%
+pivot_longer(
+cols      = -var1,
+names_to  = "var2",
+values_to = "corr"
+)
+
+ggplot(cor_long, aes(x = var1, y = var2, fill = corr)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low      = "#0072B2",
+    mid      = "white",
+    high     = "#D55E00",
+    midpoint = 0,
+    limits   = c(-1, 1),
+    name     = "Correlación"
+  ) +
+  coord_equal() +
+  labs(
+    title = "Matriz de correlaciones entre cuentas contables"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    axis.title  = element_blank(),
+    panel.grid  = element_blank()
+  )
+
+
+```
+
+# 9. Calidad de los datos: NA por variable
+
+```{r}
+colSums(is.na(df))
+plot_missing(df)  
+```
+
+# 10. Calidad de datos: detectar outliers con IQR
+
+```{r}
+outliers <- df %>%
+select(all_of(vars_c)) %>%
+pivot_longer(
+cols      = everything(),
+names_to  = "variable",
+values_to = "valor"
+) %>%
+group_by(variable) %>%
+mutate(
+q1         = quantile(valor, 0.25, na.rm = TRUE),
+q3         = quantile(valor, 0.75, na.rm = TRUE),
+iqr        = q3 - q1,
+limite_inf = q1 - 1.5 * iqr,
+limite_sup = q3 + 1.5 * iqr,
+es_outlier = valor < limite_inf | valor > limite_sup
+) %>%
+filter(es_outlier) %>%
+ungroup()
+
+outliers %>%
+select(variable, valor, limite_inf, limite_sup) %>%
+arrange(variable, valor) %>%
+kable(
+caption = "Observaciones identificadas como outliers por la regla del IQR",
+digits  = 2
+) %>%
+kable_styling(
+full_width        = FALSE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "500px")
+
+```
+
+# 11. Detección de valores negativos en cuentas contables
+
+```{r}
+
+valores_negativos <- df %>%
+select(all_of(vars_c)) %>%
+pivot_longer(
+cols      = everything(),
+names_to  = "variable",
+values_to = "valor"
+) %>%
+filter(valor < 0) %>%
+distinct(variable) %>%
+arrange(variable)
+
+valores_negativos %>%
+kable(
+caption = "Cuentas contables con presencia de valores negativos"
+) %>%
+kable_styling(
+full_width        = FALSE,
+bootstrap_options = c("striped", "hover", "condensed")
+)
+```
+
+# 12. Completitud por entidad y periodo
+
+```{r}
+completitud <- df %>%
+count(nombre_entidad, periodo) %>%
+pivot_wider(
+names_from  = periodo,
+values_from = n,
+values_fill = 0
+) %>%
+arrange(nombre_entidad)
+
+completitud %>%
+kable(
+caption = "Completitud de observaciones por entidad y periodo"
+) %>%
+kable_styling(
+full_width        = TRUE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "500px")
+
+```
+
+# 13. Crear variable segmento: Banco / Financiera / Cooperativa
+
+```{r}
+df_seg <- df %>%
+mutate(
+segmento = case_when(
+codigo_sector %in% c(1, 2, 3) ~ "Banco",
+codigo_sector == 4           ~ "Financiera",
+codigo_sector == 6           ~ "Cooperativa",
+TRUE                         ~ "Otro"
+)
+) %>%
+filter(segmento != "Otro")
+```
+
+
+# 14. Función para evaluar poder discriminatorio entre ENTIDADES dentro de cada sector, usando ANOVA univariado
+
+```{r}
+evaluar_discriminacion <- function(data_sector, sector_nombre) {
+map_df(vars_c, function(v) {
+formula <- as.formula(paste(v, "~ nombre_entidad"))
+modelo  <- aov(formula, data = data_sector)
+tibble(
+sector   = sector_nombre,
+variable = v,
+p_value  = summary(modelo)[[1]][["Pr(>F)"]][1]
+)
+}) %>%
+arrange(p_value)
+}
+```
+
+# 15. Separar por sector y aplicar ANOVA
+
+```{r}
+anova_bancos <- evaluar_discriminacion(
+df_seg %>% filter(segmento == "Banco"),
+"Banco"
+)
+
+anova_financieras <- evaluar_discriminacion(
+df_seg %>% filter(segmento == "Financiera"),
+"Financiera"
+)
+
+anova_coop <- evaluar_discriminacion(
+df_seg %>% filter(segmento == "Cooperativa"),
+"Cooperativa"
+)
+
+anova_bancos %>% 
+  head(10) %>%
+  mutate(p_value = sprintf("%.6f", p_value)) %>%
+  kable(
+    caption = "Top 10 variables más discriminantes entre bancos (ANOVA)",
+    align   = "c"
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+
+anova_financieras %>% 
+  head(10) %>%
+  mutate(p_value = sprintf("%.6f", p_value)) %>%
+  kable(
+    caption = "Top 10 variables más discriminantes entre financieras (ANOVA)",
+    align   = "c"
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+
+anova_coop %>% 
+  head(10) %>%
+  mutate(p_value = sprintf("%.6f", p_value)) %>%
+  kable(
+    caption = "Top 10 variables más discriminantes entre cooperativas (ANOVA)",
+    align   = "c"
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  )
+
+```
+
+# 16. Visualizar variables más discriminantes por sector
+
+```{r fig.height=12, fig.width=12}
+
+graf_top_disc <- function(anova_res, data_sector, titulo_sector) {
+top_vars <- anova_res %>%
+slice(1:24) %>%
+pull(variable)
+
+data_sector %>%
+select(nombre_entidad, all_of(top_vars)) %>%
+pivot_longer(
+cols      = -nombre_entidad,
+names_to  = "variable",
+values_to = "valor"
+) %>%
+ggplot(aes(x = nombre_entidad, y = valor/1000000000000, fill = nombre_entidad)) +
+geom_boxplot(outlier.alpha = 0.2, show.legend = FALSE) +
+facet_wrap(~ variable, scales = "free_y") +
+labs(
+title = titulo_sector,
+x     = "Entidad",
+y     = "Valor (billones)"
+) +
+theme(
+axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size  = 8)
+)
+}
+
+graf_top_disc(anova_bancos, df_seg %>% filter(segmento == "Banco"),
+"Distribución de las variables entre bancos ordenadas según poder de discriminación")
+
+graf_top_disc(anova_financieras, df_seg %>% filter(segmento == "Financiera"),
+"Top 6 variables más discriminantes entre financieras")
+
+graf_top_disc(anova_coop, df_seg %>% filter(segmento == "Cooperativa"),
+"Top 6 variables más discriminantes entre cooperativas")
+
+```
+
+# 17. Importancia mediante Random Forest entre entidades (separado por sector)
+
+```{r}
+set.seed(1234)
+
+modelo_rf_sector <- function(data_sector, sector_nombre) {
+
+data_rf <- data_sector %>%
+select(nombre_entidad, all_of(vars_c)) %>%
+mutate(
+nombre_entidad = as.factor(nombre_entidad)
+) %>%
+mutate(across(all_of(vars_c), ~ suppressWarnings(as.numeric(.x)))) %>%
+select(where(~ !all(is.na(.x)))) %>%
+drop_na()
+
+if (n_distinct(data_rf$nombre_entidad) < 2) {
+message("No hay suficientes entidades para entrenar Random Forest en el sector: ", sector_nombre)
+return(NULL)
+}
+
+rf_model <- randomForest(
+nombre_entidad ~ .,
+data       = data_rf,
+importance = TRUE,
+ntree      = 500
+)
+
+tibble(
+sector      = sector_nombre,
+variable    = rownames(rf_model$importance),
+importancia = rf_model$importance[, "MeanDecreaseGini"]
+) %>%
+arrange(desc(importancia))
+}
+
+imp_bancos      <- modelo_rf_sector(df_seg %>% filter(segmento == "Banco"),      "Banco")
+imp_financieras <- modelo_rf_sector(df_seg %>% filter(segmento == "Financiera"), "Financiera")
+imp_coop        <- modelo_rf_sector(df_seg %>% filter(segmento == "Cooperativa"), "Cooperativa")
+```
+
+# 18. Gráfico de importancia
+
+```{r}
+plot_imp <- function(imp_res, titulo_sector) {
+if (is.null(imp_res)) return(NULL)
+
+imp_res %>%
+slice(1:24) %>%
+ggplot(aes(x = reorder(variable, importancia), y = importancia)) +
+geom_col(fill = "#4E79A7") +
+coord_flip() +
+labs(
+title = titulo_sector,
+x     = "Variable",
+y     = "Importancia (MeanDecreaseGini)"
+)
+}
+
+plot_imp(imp_bancos,      "Importancia de variables en bancos (Random Forest)")
+plot_imp(imp_financieras, "Importancia de variables en financieras (Random Forest)")
+plot_imp(imp_coop,        "Importancia de variables en cooperativas (Random Forest)")
+```
+
+# 19. Distancias entre entidades (centroides) por sector
+
+```{r}
+dist_centroides <- function(data_sector) {
+centroides <- data_sector %>%
+group_by(nombre_entidad) %>%
+summarise(
+across(all_of(vars_c), ~ mean(.x, na.rm = TRUE)),
+.groups = "drop"
+)
+
+dist(centroides %>% select(-nombre_entidad)) %>%
+as.matrix() %>%
+as.data.frame() %>%
+rownames_to_column("entidad_1") %>%
+pivot_longer(
+cols      = -entidad_1,
+names_to  = "entidad_2",
+values_to = "distancia"
+)
+}
+
+dist_bancos      <- dist_centroides(df_seg %>% filter(segmento == "Banco"))
+dist_financieras <- dist_centroides(df_seg %>% filter(segmento == "Financiera"))
+dist_coop        <- dist_centroides(df_seg %>% filter(segmento == "Cooperativa"))
+
+dist_bancos %>%
+kable(
+caption = "Distancias entre entidades (bancos) a partir de centroides de cuentas C",
+digits  = 3
+) %>%
+kable_styling(
+full_width        = TRUE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "400px")
+```
+
+
+```{r}
+dist_financieras %>%
+kable(
+caption = "Distancias entre entidades (financieras) a partir de centroides de cuentas C",
+digits  = 3
+) %>%
+kable_styling(
+full_width        = TRUE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "400px")
+
+```
+
+```{r}
+dist_coop %>%
+kable(
+caption = "Distancias entre entidades (cooperativas) a partir de centroides de cuentas C",
+digits  = 3
+) %>%
+kable_styling(
+full_width        = TRUE,
+bootstrap_options = c("striped", "hover", "condensed")
+) %>%
+scroll_box(height = "400px")
+
+```
+
+# 20. Eliminar variables con poco poder predictivo
+
+```{r}
+df_modelos <- df_seg %>%
+  select(
+    -codigo_sector,
+    -descripcion_sector,
+    -codigo_entidad
+  ) %>%
+  relocate(segmento, .before = nombre_entidad) %>%
+  rename(entidad = nombre_entidad)
+
+df_bancos       <- df_modelos %>% filter(segmento == "Banco") %>% select(-segmento)
+df_financieras  <- df_modelos %>% filter(segmento == "Financiera") %>% select(-segmento)
+df_cooperativas <- df_modelos %>% filter(segmento == "Cooperativa") %>% select(-segmento)
+```
+
+
+```{r}
+# Identificar variables con poca variabilidad (near zero variance)
+# Bancos
+nzv_bancos <- nearZeroVar(
+  df_bancos %>% select(-entidad),
+  saveMetrics = TRUE
+) %>%
+  filter(nzv) %>%
+  tibble::rownames_to_column("variable")
+
+nzv_bancos %>%
+  kable(
+    caption = "Variables con poca variabilidad en bancos",
+    align   = "c",
+    digits  = 2
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  ) %>%
+  scroll_box(height = "300px")
+
+# Financieras
+nzv_financieras <- nearZeroVar(
+  df_financieras %>% select(-entidad),
+  saveMetrics = TRUE
+) %>%
+  filter(nzv) %>%
+  tibble::rownames_to_column("variable")
+
+  nzv_financieras %>%
+  kable(
+    caption = "Variables con poca variabilidad en financieras",
+    align   = "c",
+    digits  = 2
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  ) %>%
+  scroll_box(height = "300px")
+
+# Cooperativas
+nzv_cooperativas <- nearZeroVar(
+  df_cooperativas %>% select(-entidad),
+  saveMetrics = TRUE
+) %>%
+  filter(nzv) %>%
+  tibble::rownames_to_column("variable")
+
+nzv_cooperativas %>%
+  kable(
+    caption = "Variables con poca variabilidad en cooperativas",
+    align   = "c",
+    digits  = 2
+  ) %>%
+  kable_styling(
+    full_width        = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed")
+  ) %>%
+  scroll_box(height = "300px")
+```
+
+```{r}
+# Eliminación automática de variables con poco poder predictivo
+
+limpiar_nzv <- function(df, target) {
+  
+  nzv_tbl <- nearZeroVar(
+    df %>% select(-all_of(target)),
+    saveMetrics = TRUE
+  )
+  
+  vars_eliminar <- rownames(nzv_tbl[nzv_tbl$nzv, ])
+  
+  df %>% select(-all_of(vars_eliminar))
+}
+
+
+df_bancos_limpio <- limpiar_nzv(df_bancos, "entidad")
+df_fin_limpio    <- limpiar_nzv(df_financieras, "entidad")
+df_coop_limpio   <- limpiar_nzv(df_cooperativas, "entidad")
+
+```
+
+# 22. Guardar archivos para análisis predictivo
+
+```{r}
+saveRDS(df_bancos_limpio, file = here::here("entradas/datos_bancos_limpio.rds"))
+
+write.csv(df_bancos_limpio, file = here::here("entradas/datos_bancos_limpio.csv"), row.names = FALSE)
+
+saveRDS(df_fin_limpio, file = here::here("entradas/datos_financieras_limpio.rds"))
+
+write.csv(df_fin_limpio, file = here::here("entradas/datos_financieras_limpio.csv"), row.names = FALSE)
+
+saveRDS(df_coop_limpio, file = here::here("entradas/datos_cooperativas_limpio.rds"))
+
+write.csv(df_coop_limpio, file = here::here("entradas/datos_cooperativas_limpio.csv"), row.names = FALSE)
+
+```
+

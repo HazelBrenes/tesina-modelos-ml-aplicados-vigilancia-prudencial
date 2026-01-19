@@ -1,0 +1,349 @@
+```{r}
+# ============================================================
+# 06_dt.Rmd
+# MODELO: ÁRBOL DE DECISIÓN (CART)
+# VALIDACIÓN TEMPORAL + REPETICIONES (SIN SEMILLAS)
+# APLICA A CUALQUIER SEGMENTO
+#
+# Requiere en el entorno:
+#   - datos
+#   - segmento_actual
+#   - anios_validacion, anios_test_final
+#   - n_reps, n_reps_test
+#   - funciones de 03_utils.Rmd
+#   - here, glue cargados en 01_setup.Rmd
+# ============================================================
+```
+
+```{r}
+# ============================================================
+# RECIPE (COMÚN RF / DT)
+# ============================================================
+
+dt_recipe <- recipe(entidad ~ ., data = datos) %>%
+  update_role(periodo, anio, new_role = "id") %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric_predictors())
+```
+
+```{r}
+# ============================================================
+# MALLA DE HIPERPARÁMETROS (DT)
+# ============================================================
+
+grid_dt <- expand_grid(
+  cost_complexity = 10^seq(-4, -1, by = 1),
+  tree_depth      = c(3, 5, 8, 12),
+  min_n           = c(5, 10, 20)
+) %>%
+  mutate(id_grid = row_number())
+
+```
+
+
+```{r}
+# ============================================================
+# FUNCIÓN DE EVALUACIÓN (DT)
+# ============================================================
+
+evaluar_configuracion_dt <- function(cost_complexity, tree_depth, min_n, id_grid) {
+  
+  dt_spec <- decision_tree(
+    cost_complexity = cost_complexity,
+    tree_depth      = tree_depth,
+    min_n           = min_n
+  ) %>%
+    set_engine("rpart") %>%
+    set_mode("classification")
+  
+  dt_wf <- workflow() %>%
+    add_model(dt_spec) %>%
+    add_recipe(dt_recipe)
+  
+  expand_grid(
+    anio_test = anios_validacion,
+    rep       = seq_len(n_reps)
+  ) %>%
+    mutate(
+      f1_macro = pmap_dbl(
+        list(anio_test, rep),
+        function(anio_test, rep) {
+          
+          train_data <- datos %>% filter(anio <= anio_test - 1)
+          test_data  <- datos %>% filter(anio == anio_test)
+          
+          fit_dt <- dt_wf %>% fit(train_data)
+          
+          pred <- bind_cols(
+            test_data %>% select(entidad),
+            predict(fit_dt, test_data, type = "class")
+          )
+          
+          metricas_desde_mc(pred) %>%
+            summarise(mean(f1_k, na.rm = TRUE)) %>%
+            pull()
+        }
+      ),
+      id_grid         = id_grid,
+      cost_complexity = cost_complexity,
+      tree_depth      = tree_depth,
+      min_n           = min_n
+    )
+}
+
+```
+
+```{r}
+# ============================================================
+# EJECUCIÓN DE LA MALLA
+# ============================================================
+
+resultados_malla_dt <- pmap_dfr(
+  grid_dt,
+  evaluar_configuracion_dt
+)
+
+dir.create(here::here("salidas"), showWarnings = FALSE)
+
+saveRDS(
+  resultados_malla_dt,
+  here::here(
+    "salidas",
+    glue::glue("resultados_malla_dt_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+
+```{r}
+# ============================================================
+# RANKING ROBUSTO (DT)
+# ============================================================
+
+ranking_malla_dt <- resultados_malla_dt %>%
+  group_by(id_grid, cost_complexity, tree_depth, min_n) %>%
+  summarise(
+    f1_mean = mean(f1_macro),
+    f1_sd   = sd(f1_macro),
+    f1_p10  = quantile(f1_macro, 0.10),
+    f1_min  = min(f1_macro),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(f1_mean), desc(f1_p10))
+
+mejor_configuracion_dt <- ranking_malla_dt %>% slice(1)
+
+mejor_configuracion_dt
+
+```
+
+```{r}
+# ============================================================
+# RANKING ROBUSTO (DT)
+# ============================================================
+
+ranking_malla_dt <- resultados_malla_dt %>%
+  group_by(id_grid, cost_complexity, tree_depth, min_n) %>%
+  summarise(
+    f1_mean = mean(f1_macro),
+    f1_sd   = sd(f1_macro),
+    f1_p10  = quantile(f1_macro, 0.10),
+    f1_min  = min(f1_macro),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(f1_mean), desc(f1_p10))
+
+mejor_configuracion_dt <- ranking_malla_dt %>% slice(1)
+
+mejor_configuracion_dt
+
+```
+
+```{r}
+# ============================================================
+# MODELO FINAL (DT)
+# ============================================================
+
+dt_final_spec <- decision_tree(
+  cost_complexity = mejor_configuracion_dt$cost_complexity,
+  tree_depth      = mejor_configuracion_dt$tree_depth,
+  min_n           = mejor_configuracion_dt$min_n
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+dt_final_wf <- workflow() %>%
+  add_model(dt_final_spec) %>%
+  add_recipe(dt_recipe)
+
+```
+
+```{r}
+# ============================================================
+# TEST FINAL (DT)
+# ============================================================
+
+resultados_test_final_dt <- expand_grid(
+  anio_test = anios_test_final,
+  rep       = seq_len(n_reps_test)
+) %>%
+  mutate(
+    resultado = pmap(
+      list(anio_test, rep),
+      function(anio_test, rep) {
+        
+        train_data <- datos %>% filter(anio <= anio_test - 1)
+        test_data  <- datos %>% filter(anio == anio_test)
+        
+        fit_dt <- dt_final_wf %>% fit(train_data)
+        
+        pred <- bind_cols(
+          test_data %>% select(entidad),
+          predict(fit_dt, test_data, type = "class")
+        )
+        
+        metricas <- metricas_desde_mc(pred)
+        
+        tibble(
+          f1_macro        = mean(metricas$f1_k, na.rm = TRUE),
+          precision_macro = mean(metricas$precision_k, na.rm = TRUE)
+        )
+      }
+    )
+  ) %>%
+  unnest(resultado)
+
+```
+
+```{r}
+# ============================================================
+# RESUMEN TEST FINAL (DT)
+# ============================================================
+
+resultados_test_final_resumen_dt <- resultados_test_final_dt %>%
+  group_by(anio_test) %>%
+  summarise(
+    f1_macro_mean        = mean(f1_macro),
+    f1_macro_sd          = sd(f1_macro),
+    precision_macro_mean = mean(precision_macro),
+    .groups = "drop"
+  )
+
+saveRDS(
+  resultados_test_final_resumen_dt,
+  here::here(
+    "salidas",
+    glue::glue("resultados_test_final_dt_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```
+
+
+```{r}
+# ============================================================
+# MATRICES DE CONFUSIÓN Y MÉTRICAS POR ENTIDAD (DT)
+# ============================================================
+
+predicciones_test_final_dt <- expand_grid(
+  anio_test = anios_test_final,
+  rep       = seq_len(n_reps_test)
+) %>%
+  mutate(
+    pred = pmap(
+      list(anio_test, rep),
+      function(anio_test, rep) {
+        
+        train_data <- datos %>% filter(anio <= anio_test - 1)
+        test_data  <- datos %>% filter(anio == anio_test)
+        
+        fit_dt <- dt_final_wf %>% fit(train_data)
+        
+        bind_cols(
+          test_data %>% select(entidad),
+          predict(fit_dt, test_data, type = "class")
+        )
+      }
+    )
+  ) %>%
+  unnest(pred)
+
+matrices_confusion_dt <- predicciones_test_final_dt %>%
+  nest_by(anio_test, rep) %>%
+  mutate(
+    cm = list(
+      {
+        df <- as_tibble(
+          as.data.frame(
+            yardstick::conf_mat(
+              data,
+              truth    = entidad,
+              estimate = .pred_class
+            )$table
+          )
+        )
+        names(df)[1:3] <- c("truth", "estimate", "n")
+        df
+      }
+    )
+  ) %>%
+  unnest(cm) %>%
+  ungroup() %>%
+  select(-data)
+
+
+metricas_entidad_dt <- predicciones_test_final_dt %>%
+  group_by(anio_test, rep) %>%
+  group_modify(~ metricas_por_entidad(.x)) %>%
+  ungroup() %>%
+  group_by(anio_test, entidad) %>%
+  summarise(
+    precision = mean(precision, na.rm = TRUE),
+    recall    = mean(recall, na.rm = TRUE),
+    f1        = mean(f1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+saveRDS(
+  metricas_entidad_dt,
+  here::here(
+    "salidas",
+    glue::glue("metricas_por_entidad_dt_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  matrices_confusion_dt,
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_dt_{tolower(segmento_actual)}.rds")
+  )
+)
+
+matriz_promedio_dt <- matrices_confusion_dt %>%
+  group_by(anio_test, truth, estimate) %>%
+  summarise(
+    n_mean = mean(n),
+    .groups = "drop"
+  )
+
+saveRDS(
+  matriz_promedio_dt,
+  here::here(
+    "salidas",
+    glue::glue("matriz_promedio_dt_{tolower(segmento_actual)}.rds")
+  )
+)
+
+
+```
+
+
+
+
+
+
+
+
+
+

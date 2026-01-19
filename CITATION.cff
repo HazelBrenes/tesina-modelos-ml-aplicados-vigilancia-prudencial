@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "Si utiliza este repositorio, por favor cítelo de la siguiente manera."
+title: "Modelos de aprendizaje supervisado aplicados a la vigilancia prudencial del sistema financiero costarricense"
+type: software
+authors:
+  - family-names: "Brenes Umaña"
+    given-names: "Hazel"
+  - family-names: "Acuña Araya"
+    given-names: "Minor"
+version: "1.0.0"
+date-released: 2026-01-19
+url: "https://github.com/HazelBrenes/tesina-modelos-ml-aplicados-vigilancia-prudencial"
+abstract: >
+  Repositorio de reproducibilidad asociado a la tesina de graduación del Máster Ejecutivo
+  en Ciencia de Datos e Inteligencia Artificial. Contiene el código, la documentación técnica
+  y los insumos necesarios para reproducir los experimentos de aprendizaje supervisado
+  aplicados a la vigilancia prudencial del sistema financiero costarricense.
+keywords:
+  - aprendizaje supervisado
+  - ciencia de datos
+  - vigilancia prudencial
+  - sistema financiero
+  - reproducibilidad
+license: MIT

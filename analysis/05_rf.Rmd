@@ -1,0 +1,308 @@
+```{r}
+# ============================================================
+# 05_rf.Rmd
+# MODELO: RANDOM FOREST
+# VALIDACIÓN TEMPORAL + REPETICIONES (SIN SEMILLAS)
+# APLICA A CUALQUIER SEGMENTO (BANCOS / COOPERATIVAS / FINANCIERAS)
+#
+# Requiere que existan en el entorno:
+#   - datos
+#   - segmento_actual
+#   - anios_validacion, anios_test_final
+#   - n_reps, n_reps_test
+#   - funciones en 03_utils.Rmd
+#   - library(here), library(glue) cargadas en 01_setup.Rmd
+# ============================================================
+```
+
+```{r}
+# ============================================================
+# RECIPE (COMÚN RF / DT)
+# ============================================================
+
+rf_recipe <- recipe(entidad ~ ., data = datos) %>%
+  update_role(periodo, anio, new_role = "id") %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric_predictors())
+```
+
+```{r}
+# ============================================================
+# MALLA DE HIPERPARÁMETROS (RF)
+# ============================================================
+grid_rf <- expand_grid(
+  mtry  = c(3, 5, 10, 15),
+  trees = c(300, 500, 800),
+  min_n = c(5, 10, 20)
+) %>%
+  mutate(id_grid = row_number())
+
+```
+
+
+```{r}
+# ============================================================
+# FUNCIÓN DE EVALUACIÓN (VENTANA EXPANSIVA + REPETICIONES)
+# ============================================================
+
+evaluar_configuracion_rf <- function(mtry, trees, min_n, id_grid) {
+  
+  rf_spec <- rand_forest(
+    mtry  = mtry,
+    trees = trees,
+    min_n = min_n
+  ) %>%
+    set_engine("ranger", importance = "impurity") %>%
+    set_mode("classification")
+  
+  rf_wf <- workflow() %>%
+    add_model(rf_spec) %>%
+    add_recipe(rf_recipe)
+  
+  expand_grid(
+    anio_test = anios_validacion,
+    rep       = seq_len(n_reps)
+  ) %>%
+    mutate(
+      f1_macro = pmap_dbl(
+        list(anio_test, rep),
+        function(anio_test, rep) {
+          
+          train_data <- datos %>% filter(anio <= anio_test - 1)
+          test_data  <- datos %>% filter(anio == anio_test)
+          
+          fit_rf <- rf_wf %>% fit(train_data)
+          
+          pred <- bind_cols(
+            test_data %>% select(entidad),
+            predict(fit_rf, test_data, type = "class")
+          )
+          
+          metricas_desde_mc(pred) %>%
+            summarise(mean(f1_k, na.rm = TRUE)) %>%
+            pull()
+        }
+      ),
+      id_grid = id_grid,
+      mtry    = mtry,
+      trees   = trees,
+      min_n   = min_n
+    )
+}
+
+```
+
+```{r}
+# ============================================================
+# EJECUCIÓN DE LA MALLA
+# ============================================================
+
+resultados_malla_rf <- pmap_dfr(
+  grid_rf,
+  evaluar_configuracion_rf
+)
+
+dir.create(here::here("salidas"), showWarnings = FALSE)
+
+saveRDS(
+  resultados_malla_rf,
+  here::here(
+    "salidas",
+    glue::glue("resultados_malla_rf_{tolower(segmento_actual)}.rds")
+  )
+)
+```
+
+```{r}
+# ============================================================
+# RANKING ROBUSTO DE CONFIGURACIONES
+# ============================================================
+
+ranking_malla_rf <- resultados_malla_rf %>%
+  group_by(id_grid, mtry, trees, min_n) %>%
+  summarise(
+    f1_mean = mean(f1_macro),
+    f1_sd   = sd(f1_macro),
+    f1_p10  = quantile(f1_macro, 0.10),
+    f1_min  = min(f1_macro),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(f1_mean), desc(f1_p10))
+
+mejor_configuracion_rf <- ranking_malla_rf %>% slice(1)
+
+mejor_configuracion_rf
+```
+
+```{r}
+# ============================================================
+# MODELO FINAL (RF)
+# ============================================================
+
+rf_final_spec <- rand_forest(
+  mtry  = mejor_configuracion_rf$mtry,
+  trees = mejor_configuracion_rf$trees,
+  min_n = mejor_configuracion_rf$min_n
+) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+rf_final_wf <- workflow() %>%
+  add_model(rf_final_spec) %>%
+  add_recipe(rf_recipe)
+```
+
+```{r}
+# ============================================================
+# TEST FINAL (2023–2025) CON REPETICIONES
+# ============================================================
+
+resultados_test_final_rf <- expand_grid(
+  anio_test = anios_test_final,
+  rep       = seq_len(n_reps_test)
+) %>%
+  mutate(
+    resultado = pmap(
+      list(anio_test, rep),
+      function(anio_test, rep) {
+        
+        train_data <- datos %>% filter(anio <= anio_test - 1)
+        test_data  <- datos %>% filter(anio == anio_test)
+        
+        fit_rf <- rf_final_wf %>% fit(train_data)
+        
+        pred <- bind_cols(
+          test_data %>% select(entidad),
+          predict(fit_rf, test_data, type = "class")
+        )
+        
+        metricas <- metricas_desde_mc(pred)
+        
+        tibble(
+          f1_macro        = mean(metricas$f1_k, na.rm = TRUE),
+          precision_macro = mean(metricas$precision_k, na.rm = TRUE)
+        )
+      }
+    )
+  ) %>%
+  unnest(resultado)
+```
+
+```{r}
+# ============================================================
+# RESUMEN TEST FINAL POR AÑO
+# ============================================================
+
+resultados_test_final_resumen_rf <- resultados_test_final_rf %>%
+  group_by(anio_test) %>%
+  summarise(
+    f1_macro_mean        = mean(f1_macro),
+    f1_macro_sd          = sd(f1_macro),
+    precision_macro_mean = mean(precision_macro),
+    .groups = "drop"
+  )
+
+saveRDS(
+  resultados_test_final_resumen_rf,
+  here::here(
+    "salidas",
+    glue::glue("resultados_test_final_rf_{tolower(segmento_actual)}.rds")
+  )
+)
+```
+
+```{r}
+# ============================================================
+# MATRICES DE CONFUSIÓN Y MÉTRICAS POR ENTIDAD
+# ============================================================
+
+predicciones_test_final_rf <- expand_grid(
+  anio_test = anios_test_final,
+  rep       = seq_len(n_reps_test)
+) %>%
+  mutate(
+    pred = pmap(
+      list(anio_test, rep),
+      function(anio_test, rep) {
+        
+        train_data <- datos %>% filter(anio <= anio_test - 1)
+        test_data  <- datos %>% filter(anio == anio_test)
+        
+        fit_rf <- rf_final_wf %>% fit(train_data)
+        
+        bind_cols(
+          test_data %>% select(entidad),
+          predict(fit_rf, test_data, type = "class")
+        )
+      }
+    )
+  ) %>%
+  unnest(pred)
+
+matrices_confusion_rf <- predicciones_test_final_rf %>%
+  nest_by(anio_test, rep) %>%
+  mutate(
+    cm = list(
+      {
+        df <- as_tibble(
+          as.data.frame(
+            yardstick::conf_mat(
+              data,
+              truth    = entidad,
+              estimate = .pred_class
+            )$table
+          )
+        )
+        names(df)[1:3] <- c("truth", "estimate", "n")
+        df
+      }
+    )
+  ) %>%
+  unnest(cm) %>%
+  ungroup() %>%
+  select(-data)
+
+metricas_entidad_rf <- predicciones_test_final_rf %>%
+  group_by(anio_test, rep) %>%
+  group_modify(~ metricas_por_entidad(.x)) %>%
+  ungroup() %>%
+  group_by(anio_test, entidad) %>%
+  summarise(
+    precision = mean(precision, na.rm = TRUE),
+    recall    = mean(recall, na.rm = TRUE),
+    f1        = mean(f1, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+saveRDS(
+  metricas_entidad_rf,
+  here::here(
+    "salidas",
+    glue::glue("metricas_por_entidad_rf_{tolower(segmento_actual)}.rds")
+  )
+)
+
+saveRDS(
+  matrices_confusion_rf,
+  here::here(
+    "salidas",
+    glue::glue("matrices_confusion_rf_{tolower(segmento_actual)}.rds")
+  )
+)
+
+matriz_promedio_rf <- matrices_confusion_rf %>%
+  group_by(anio_test, truth, estimate) %>%
+  summarise(
+    n_mean = mean(n),
+    .groups = "drop"
+  )
+
+saveRDS(
+  matriz_promedio_rf,
+  here::here(
+    "salidas",
+    glue::glue("matriz_promedio_rf_{tolower(segmento_actual)}.rds")
+  )
+)
+
+```

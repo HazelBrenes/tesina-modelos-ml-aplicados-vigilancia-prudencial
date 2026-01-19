@@ -1,0 +1,24 @@
+---
+title: "01_setup"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(tidymodels)
+  library(lubridate)
+  library(purrr)
+  library(scales)
+  library(here)
+  library(glue)
+  library(patchwork)
+})
+
+anios_validacion <- 2020:2022
+anios_test_final <- 2023:2025
+
+n_reps      <- 30
+n_reps_test <- 30
+
+```

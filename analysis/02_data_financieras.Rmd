@@ -1,0 +1,18 @@
+---
+title: "02_data_bancos"
+output: html_document
+---
+
+```{r}
+datos <- readRDS(
+  here::here("entradas", "datos_financieras_limpio.rds")
+) %>%
+  mutate(
+    periodo = as.Date(periodo),
+    anio    = lubridate::year(periodo),
+    entidad = factor(entidad)
+  )
+
+
+segmento_actual <- "Financieras"
+```

@@ -1,0 +1,415 @@
+```{r}
+# ============================================================
+# 08_caso_estudio_entidades_intervenidas.Rmd
+# CASO DE ESTUDIO:
+# DESYFIN (Financiera) y COOPESERVIDORES (Cooperativa)
+#
+# Objetivo:
+# Evaluar deterioro de desempeño predictivo previo a eventos
+# de intervención / resolución (2024)
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(glue)
+  library(here)
+  library(patchwork)
+})
+
+```
+
+```{r}
+#-----------------------
+# 1. Parámetros globales
+#-----------------------
+
+entidades_intervenidas <- c("DESYFIN", "COOPESERVIDORES")
+anio_evento           <- 2024
+anios_analisis        <- c(2023, 2024)
+```
+
+```{r}
+#-----------------------------------
+#2. Carga de resultados consolidados
+#-----------------------------------
+tabla_entidad_anio <- bind_rows(
+  readRDS(here("salidas", "tabla_entidad_anio_financieras.rds")),
+  readRDS(here("salidas", "tabla_entidad_anio_cooperativas.rds"))
+)
+
+tabla_entidad_reps <- bind_rows(
+  readRDS(here("salidas", "tabla_entidad_reps_financieras.rds")),
+  readRDS(here("salidas", "tabla_entidad_reps_cooperativas.rds"))
+)
+
+matrices_confusion <- bind_rows(
+  readRDS(here("salidas", "matrices_confusion_todas_modelos_financieras.rds")),
+  readRDS(here("salidas", "matrices_confusion_todas_modelos_cooperativas.rds"))
+)
+
+```
+
+```{r}
+#-----------------------------------
+# 3. Datos base del caso de estudio
+#-----------------------------------
+
+base_evolucion <- tabla_entidad_anio %>%
+  filter(
+    entidad %in% entidades_intervenidas,
+    anio_test %in% anios_analisis
+  )
+
+base_dispersion <- tabla_entidad_reps %>%
+  filter(
+    entidad %in% entidades_intervenidas,
+    anio_test %in% anios_analisis
+  )
+
+benchmark_sistema <- tabla_entidad_anio %>%
+  filter(anio_test %in% anios_analisis) %>%
+  group_by(anio_test) %>%
+  summarise(
+    f1_sistema = median(f1_mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+diagonal_entidades <- matrices_confusion %>%
+  filter(
+    truth == estimate,
+    truth %in% entidades_intervenidas
+  ) %>%
+  group_by(anio_test, rep, entidad = truth) %>%
+  summarise(
+    aciertos = sum(n),
+    .groups = "drop"
+  )
+
+totales_entidades <- matrices_confusion %>%
+  filter(truth %in% entidades_intervenidas) %>%
+  group_by(anio_test, rep, entidad = truth) %>%
+  summarise(
+    total = sum(n),
+    .groups = "drop"
+  )
+
+diag_ratio <- diagonal_entidades %>%
+  left_join(
+    totales_entidades,
+    by = c("anio_test", "rep", "entidad")
+  ) %>%
+  mutate(
+    diagonal_ratio = aciertos / total
+  )
+
+diag_resumen <- diag_ratio %>%
+  filter(anio_test %in% c(2023, 2024)) %>%
+  group_by(entidad, anio_test) %>%
+  summarise(
+    diag_mean = mean(diagonal_ratio, na.rm = TRUE),
+    diag_sd   = sd(diagonal_ratio, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+
+
+```{r}
+#--------------------------
+# 4.  Funciones de gráficos
+#--------------------------
+
+# FUNCIÓN: PANEL EVOLUCIÓN TEMPORAL
+
+anios_previos <- anios_analisis
+
+plot_evolucion <- function(entidad_sel) {
+  
+  ggplot() +
+    geom_line(
+      data = benchmark_sistema,
+      aes(x = anio_test, y = f1_sistema),
+      color = "grey70",
+      linewidth = 0.6
+    ) +
+    geom_line(
+      data = base_evolucion %>% filter(entidad == entidad_sel),
+      aes(x = anio_test, y = f1_mean, linetype = modelo),
+      color = "black",
+      linewidth = 0.7
+    ) +
+    geom_point(
+      data = base_evolucion %>% filter(entidad == entidad_sel),
+      aes(x = anio_test, y = f1_mean, shape = modelo),
+      color = "black",
+      size = 2.2
+    ) +
+    geom_vline(
+      xintercept = anio_evento,
+      linetype = "dashed",
+      color = "grey40",
+      linewidth = 0.5
+    ) +
+    scale_x_continuous(breaks = anios_previos) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(
+      title = entidad_sel,
+      x = "Año",
+      y = "F1"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      plot.title = element_text(face = "bold", size = 11),
+      legend.position = "none"
+    )
+}
+
+
+# FUNCIÓN: PANEL DISPERSIÓN (INestabilidad)
+
+plot_dispersion <- function(entidad_sel) {
+  
+  ggplot(
+    base_dispersion %>% filter(entidad == entidad_sel),
+    aes(x = modelo, y = f1)
+  ) +
+    geom_violin(
+      fill = "grey85",
+      color = "grey40",
+      linewidth = 0.3
+    ) +
+    geom_boxplot(
+      width = 0.15,
+      outlier.shape = NA,
+      linewidth = 0.4
+    ) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(
+      x = "Modelo",
+      y = "F1"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+}
+
+
+```
+
+```{r}
+#----------------------------
+# 5. Construcción de Figura Y
+#----------------------------
+p_a <- plot_evolucion("DESYFIN")
+p_b <- plot_evolucion("COOPESERVIDORES")
+
+p_c <- plot_dispersion("DESYFIN")
+p_d <- plot_dispersion("COOPESERVIDORES")
+
+figura_y <- (p_a | p_b) / (p_c | p_d) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+figura_y
+
+
+```
+
+```{r}
+#--------------------
+# 6. Guardar Figura 
+#--------------------
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = here::here(
+    "salidas",
+    "figuras",
+    "figura_Y_entidades_intervenidas.png"
+  ),
+  plot   = figura_y,
+  width  = 9,
+  height = 7,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+```
+
+
+```{r}
+# --------------------------
+# 7. DILUCIÓN DE LA DIAGONAL
+# --------------------------
+
+# PANEL SUPERIOR: EVOLUCIÓN TEMPORAL
+
+p_evolucion <- diag_resumen %>%
+  ggplot(
+    aes(
+      x = anio_test,
+      y = diag_mean,
+      group = entidad
+    )
+  ) +
+  geom_line(color = "black", linewidth = 0.7) +
+  geom_point(color = "black", size = 2) +
+  geom_errorbar(
+    aes(
+      ymin = pmax(diag_mean - diag_sd, 0),
+      ymax = pmin(diag_mean + diag_sd, 1)
+    ),
+    width = 0.15,
+    color = "grey40",
+    linewidth = 0.4
+  ) +
+  scale_x_continuous(breaks = anios_analisis) +
+  scale_y_continuous(limits = c(0, 1)) +
+  facet_wrap(~ entidad, ncol = 2) +
+  labs(
+    title    = "Dilución de la diagonal – entidades intervenidas",
+    subtitle = "Proporción de clasificaciones correctas (promedio sobre repeticiones)",
+    x        = "Año",
+    y        = "Proporción en la diagonal"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    plot.title         = element_text(face = "bold"),
+    plot.subtitle      = element_text(size = 9)
+  )
+
+# ------------------------------------------------------------
+# PANEL INFERIOR: DISPERSIÓN (2023–2024)
+# ------------------------------------------------------------
+
+p_dispersion <- diag_ratio %>%
+  filter(anio_test %in% c(2023, 2024)) %>%
+  ggplot(
+    aes(
+      x = factor(anio_test),
+      y = diagonal_ratio
+    )
+  ) +
+  geom_violin(
+    fill = "grey85",
+    color = "grey40",
+    linewidth = 0.3
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA,
+    linewidth = 0.4
+  ) +
+  facet_wrap(~ entidad, ncol = 2) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    x = "Año",
+    y = "Proporción en la diagonal"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+# ------------------------------------------------------------
+# FIGURA FINAL
+# ------------------------------------------------------------
+
+figura_dilucion_diagonal <- p_evolucion / p_dispersion
+
+figura_dilucion_diagonal
+
+# ------------------------------------------------------------
+# GUARDAR FIGURA (PNG + PDF)
+# ------------------------------------------------------------
+
+dir_figuras <- here::here("salidas", "figuras")
+dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = glue::glue(
+    "dilucion_diagonal_entidades_intervenidas.png"
+  ),
+  plot   = figura_dilucion_diagonal,
+  path   = dir_figuras,
+  width  = 9,
+  height = 7,
+  units  = "in",
+  dpi    = 300,
+  bg     = "white"
+)
+
+ggsave(
+  filename = glue::glue(
+    "dilucion_diagonal_entidades_intervenidas.pdf"
+  ),
+  plot   = figura_dilucion_diagonal,
+  path   = dir_figuras,
+  width  = 9,
+  height = 7,
+  units  = "in",
+  device = cairo_pdf
+)
+
+```
+
+```{r}
+# ---------------
+# TABLA SÍNTESIS
+# (ROBUSTA A AÑOS AUSENTES)
+# -----------------
+
+# Asegurar estructura completa por entidad–año
+tabla_sintesis_base <- diag_resumen %>%
+  select(entidad, anio_test, diag_mean, diag_sd) %>%
+  arrange(entidad, anio_test)
+
+# ============================================================
+# TABLA SÍNTESIS – DILUCIÓN DE LA DIAGONAL
+# ENTIDADES INTERVENIDAS (2023–2024)
+# ============================================================
+
+tabla_sintesis_paper_final <- diag_resumen %>%
+  group_by(entidad) %>%
+  summarise(
+    `Diagonal 2023` = diag_mean[anio_test == 2023][1],
+    `Diagonal 2024` = diag_mean[anio_test == 2024][1],
+    `Δ 2024–2023`   = diag_mean[anio_test == 2024][1] -
+                      diag_mean[anio_test == 2023][1],
+    `SD 2023`       = diag_sd[anio_test == 2023][1],
+    `SD 2024`       = diag_sd[anio_test == 2024][1],
+    .groups = "drop"
+  ) %>%
+  mutate(
+    across(where(is.numeric), ~ round(.x, 3))
+  ) %>%
+  rename(Entidad = entidad) %>%
+  arrange(`Δ 2024–2023`)
+
+tabla_sintesis_paper_final
+
+# ------------------------------------------------------------
+# GUARDAR TABLA (RDS + CSV)
+# ------------------------------------------------------------
+
+saveRDS(
+  tabla_sintesis_paper_final,
+  here::here("salidas", "tabla_sintesis_dilucion_diagonal.rds")
+)
+
+write_csv(
+  tabla_sintesis_paper_final,
+  here::here("salidas", "tabla_sintesis_dilucion_diagonal.csv")
+)
+
+```
+
