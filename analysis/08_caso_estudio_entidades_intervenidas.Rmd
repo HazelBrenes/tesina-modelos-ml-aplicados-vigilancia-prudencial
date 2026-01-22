@@ -273,10 +273,10 @@ p_evolucion <- diag_resumen %>%
   scale_y_continuous(limits = c(0, 1)) +
   facet_wrap(~ entidad, ncol = 2) +
   labs(
-    title    = "Dilución de la diagonal – entidades intervenidas",
+    title    = "Precisión por clase – entidades intervenidas",
     subtitle = "Proporción de clasificaciones correctas (promedio sobre repeticiones)",
     x        = "Año",
-    y        = "Proporción en la diagonal"
+    y        = "Precisión por clase"
   ) +
   theme_minimal(base_size = 11) +
   theme(
@@ -312,7 +312,7 @@ p_dispersion <- diag_ratio %>%
   scale_y_continuous(limits = c(0, 1)) +
   labs(
     x = "Año",
-    y = "Proporción en la diagonal"
+    y = "Precisión por clase"
   ) +
   theme_minimal(base_size = 11) +
   theme(
