@@ -31,12 +31,12 @@ dt_recipe <- recipe(entidad ~ ., data = datos) %>%
 # MALLA DE HIPERPARÁMETROS (DT)
 # ============================================================
 
-grid_dt <- expand_grid(
-  cost_complexity = 10^seq(-4, -1, by = 1),
-  tree_depth      = c(3, 5, 8, 12),
-  min_n           = c(5, 10, 20)
+grid_dt <- tidyr::expand_grid(
+  cost_complexity = 10^seq(-7, -3, by = 1),
+  tree_depth      = c(12L, 16L, 20L),
+  min_n           = c(5L, 10L, 20L)
 ) %>%
-  mutate(id_grid = row_number())
+  dplyr::mutate(id_grid = dplyr::row_number())
 
 ```
 
